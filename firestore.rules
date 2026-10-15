@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myProfile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function isActive() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && myProfile().active == true;
+    }
+    function isManager() { return isActive() && myProfile().role == 'manager'; }
+    function onlyChanges(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    // ---- Users: managers manage everyone; a user can read their own profile ----
+    match /users/{uid} {
+      allow read: if isManager() || (signedIn() && request.auth.uid == uid);
+      allow create, delete: if isManager();
+      allow update: if isManager()
+        || (signedIn() && request.auth.uid == uid && onlyChanges(['fcmTokens', 'lastLoginAt']));
+    }
+
+    // ---- Indents: employees only see and update their own ----
+    match /indents/{id} {
+      allow read: if isManager()
+        || (isActive() && resource.data.assignedUserId == request.auth.uid);
+      allow create, delete: if isManager();
+      allow update: if isManager()
+        || (isActive()
+            && resource.data.assignedUserId == request.auth.uid
+            && onlyChanges(['actualReceivingDate', 'remarks', 'trackingStatus', 'completedAt', 'updatedAt', 'updatedBy']));
+    }
+
+    match /importHistory/{id} {
+      allow read, create: if isManager();
+    }
+
+    // ---- Notifications: each person sees their own; only "read" can be changed ----
+    match /notifications/{id} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isActive() && (request.resource.data.userId == request.auth.uid || isManager());
+      allow update: if signedIn() && resource.data.userId == request.auth.uid && onlyChanges(['read']);
+      allow delete: if isManager();
+    }
+
+    // ---- Audit log: anyone active can add their own entry; only managers read; nobody edits ----
+    match /auditLogs/{id} {
+      allow read: if isManager();
+      allow create: if isActive() && request.resource.data.userId == request.auth.uid;
+    }
+  }
+}
