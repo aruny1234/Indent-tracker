@@ -2,59 +2,102 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useData } from '../../context/DataContext.jsx';
-import { PageHeader, ErrorText } from '../../components/ui.jsx';
+import { PageHeader, ErrorText, ConfirmDialog } from '../../components/ui.jsx';
 import { parseIndentFile, classifyRecords } from '../../utils/excel.js';
-import { saveImport, watchImportHistory } from '../../services/db.js';
+import { saveImport, watchImportHistory, nextBatchId, deleteImportBatch } from '../../services/db.js';
 import { fmtDate, fmtDateTime } from '../../utils/dates.js';
 
 const TABS = [
-  { id: 'all', label: 'All rows' },
-  { id: 'new', label: 'New' },
-  { id: 'update', label: 'Updated' },
-  { id: 'duplicate', label: 'Duplicate' },
-  { id: 'invalid', label: 'Invalid' },
+  { id: 'all', label: 'All rows' }, { id: 'new', label: 'New' }, { id: 'update', label: 'Updated' },
+  { id: 'duplicate', label: 'Duplicate' }, { id: 'invalid', label: 'Invalid' },
 ];
-const CAT_STYLE = {
-  new: 'text-emerald-700', update: 'text-sky-700', duplicate: 'text-steel', invalid: 'text-red-700',
-};
+const CAT_STYLE = { new: 'text-emerald-700', update: 'text-sky-700', duplicate: 'text-steel', invalid: 'text-red-700' };
 const CAT_LABEL = { new: 'New', update: 'Update', duplicate: 'Duplicate', invalid: 'Invalid' };
 
-function History() {
-  const [rows, setRows] = useState([]);
-  const [err, setErr] = useState('');
-  useEffect(() => watchImportHistory(setRows, (e) => setErr(e.message)), []);
+function History({ history, indents, err }) {
+  const { profile } = useAuth();
+  const [target, setTarget] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [delErr, setDelErr] = useState('');
+  const liveCount = useMemo(() => {
+    const m = {};
+    indents.forEach((i) => { if (i.importBatchId) m[i.importBatchId] = (m[i.importBatchId] || 0) + 1; });
+    return m;
+  }, [indents]);
+  const targetRecords = target ? indents.filter((i) => i.importBatchId === target.batchId) : [];
+
+  async function confirm() {
+    setBusy(true);
+    setDelErr('');
+    try {
+      await deleteImportBatch(target, targetRecords, profile);
+      setTarget(null);
+    } catch (e) {
+      setDelErr(`Deletion stopped: ${e.message}. Records already deleted stay deleted; you can try again.`);
+    }
+    setBusy(false);
+  }
+
   return (
     <section className="panel mt-8 overflow-hidden">
       <h2 className="border-b border-line px-4 py-3 font-semibold">Import history</h2>
       {err && <p className="px-4 py-3 text-sm text-red-700">{err}</p>}
-      {!rows.length ? (
+      {!history.length ? (
         <p className="px-4 py-6 text-sm text-steel">No imports yet.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-canvas">
               <tr>
-                <th className="th">When</th><th className="th">File</th><th className="th">Imported by</th>
+                <th className="th">Batch</th><th className="th">Imported</th><th className="th">File</th><th className="th">By</th>
                 <th className="th text-right">Rows</th><th className="th text-right">New</th><th className="th text-right">Updated</th>
-                <th className="th text-right">Duplicate</th><th className="th text-right">Invalid</th>
+                <th className="th text-right">Dup.</th><th className="th text-right">Invalid</th><th className="th text-right">Records now</th>
+                <th className="th text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line tabular-nums">
-              {rows.map((h) => (
-                <tr key={h.id}>
-                  <td className="td whitespace-nowrap">{fmtDateTime(h.importedAt)}</td>
-                  <td className="td">{h.fileName}</td>
-                  <td className="td">{h.importedBy}</td>
-                  <td className="td text-right">{h.totalRows}</td>
-                  <td className="td text-right">{h.newRows}</td>
-                  <td className="td text-right">{h.updatedRows}</td>
-                  <td className="td text-right">{h.duplicateRows ?? '—'}</td>
-                  <td className={`td text-right ${h.invalidRows ? 'text-red-700' : ''}`}>{h.invalidRows}</td>
-                </tr>
-              ))}
+              {history.map((h) => {
+                const live = h.batchId ? liveCount[h.batchId] || 0 : null;
+                return (
+                  <tr key={h.id} className={h.deleted ? 'text-steel' : ''}>
+                    <td className="td whitespace-nowrap font-medium">{h.batchId || '—'}</td>
+                    <td className="td whitespace-nowrap">{fmtDateTime(h.importedAt)}</td>
+                    <td className="td">{h.fileName}</td>
+                    <td className="td whitespace-nowrap">{h.importedBy}</td>
+                    <td className="td text-right">{h.totalRows}</td>
+                    <td className="td text-right">{h.newRows}</td>
+                    <td className="td text-right">{h.updatedRows}</td>
+                    <td className="td text-right">{h.duplicateRows ?? '—'}</td>
+                    <td className={`td text-right ${h.invalidRows ? 'text-red-700' : ''}`}>{h.invalidRows}</td>
+                    <td className="td text-right">{live ?? '—'}</td>
+                    <td className="td whitespace-nowrap text-right">
+                      {h.deleted ? (
+                        <span className="text-xs">Deleted by {h.deletedBy} on {fmtDate(h.deletedAt)}</span>
+                      ) : h.batchId ? (
+                        <>
+                          <Link className="btn-ghost px-2 py-1" to={`/indents?batch=${encodeURIComponent(h.batchId)}`}>View</Link>
+                          <button className="btn-ghost px-2 py-1 text-red-700 hover:bg-red-50 hover:text-red-800" disabled={!live}
+                            onClick={() => { setDelErr(''); setTarget(h); }}>Delete</button>
+                        </>
+                      ) : <span className="text-xs">Imported before batches existed</span>}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
+      )}
+      {target && (
+        <ConfirmDialog title={`Delete batch ${target.batchId}`}
+          message={`Are you sure you want to delete this entire imported batch? ${targetRecords.length} record${targetRecords.length === 1 ? '' : 's'} will be deleted.`}
+          detail={
+            <>
+              <p>File: {target.fileName}. Imported {fmtDateTime(target.importedAt)} by {target.importedBy}.</p>
+              <p className="mt-2">Only indent lines first created by this import are deleted, including any assignment, PO and receiving details entered on them. Users, logins, audit logs and other imports are not affected. This cannot be undone.</p>
+            </>
+          }
+          busy={busy} error={delErr} onConfirm={confirm} onClose={() => setTarget(null)} />
       )}
     </section>
   );
@@ -63,6 +106,8 @@ function History() {
 export default function ImportPage() {
   const { profile } = useAuth();
   const { indents, loaded } = useData();
+  const [history, setHistory] = useState([]);
+  const [histErr, setHistErr] = useState('');
   const [stage, setStage] = useState('idle'); // idle | parsing | preview | saving | done
   const [file, setFile] = useState(null);
   const [parsed, setParsed] = useState(null);
@@ -71,6 +116,8 @@ export default function ImportPage() {
   const [summary, setSummary] = useState(null);
   const [drag, setDrag] = useState(false);
   const [err, setErr] = useState('');
+
+  useEffect(() => watchImportHistory(setHistory, (e) => setHistErr(e.message)), []);
 
   const counts = useMemo(() => {
     const c = { all: rows.length, new: 0, update: 0, duplicate: 0, invalid: 0 };
@@ -88,9 +135,8 @@ export default function ImportPage() {
     try {
       const result = await parseIndentFile(f);
       if (!result.records.length) throw new Error('The file has a header row but no data rows.');
-      const existing = new Map(indents.map((i) => [i.id, i]));
       setParsed(result);
-      setRows(classifyRecords(result.records, existing));
+      setRows(classifyRecords(result.records, new Map(indents.map((i) => [i.id, i]))));
       setTab('all');
       setStage('preview');
     } catch (e) {
@@ -103,7 +149,9 @@ export default function ImportPage() {
     setStage('saving');
     setErr('');
     try {
-      setSummary(await saveImport(rows, file.name, profile));
+      const batchId = nextBatchId(history);
+      const result = await saveImport(rows, file.name, profile, batchId);
+      setSummary({ ...result, batchId });
       setStage('done');
     } catch (e) {
       setErr(`Saving failed: ${e.message}`);
@@ -111,27 +159,22 @@ export default function ImportPage() {
     }
   }
 
-  function reset() {
-    setStage('idle'); setFile(null); setParsed(null); setRows([]); setSummary(null); setErr('');
-  }
-
+  const reset = () => { setStage('idle'); setFile(null); setParsed(null); setRows([]); setSummary(null); setErr(''); };
   const toSave = counts.new + counts.update;
 
   return (
     <div>
-      <PageHeader title="Import NetSuite Excel" subtitle="Upload the Purchase Requisition export. You can check every row before anything is saved." />
+      <PageHeader title="Import NetSuite Excel" subtitle="Upload the Purchase Requisition export. Every import gets a batch ID, so a wrong file can be deleted in one step." />
 
       {(stage === 'idle' || stage === 'parsing') && (
         <label
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
           onDrop={(e) => { e.preventDefault(); setDrag(false); handle(e.dataTransfer.files?.[0]); }}
-          className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ${drag ? 'border-teal bg-teal-light' : 'border-line bg-white hover:border-steel'}`}
-        >
+          className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ${drag ? 'border-teal bg-teal-light' : 'border-line bg-white hover:border-steel'}`}>
           <input type="file" accept=".xlsx,.xls,.csv" className="sr-only" disabled={!loaded || stage === 'parsing'} onChange={(e) => { handle(e.target.files?.[0]); e.target.value = ''; }} />
           <span className="text-base font-medium">{stage === 'parsing' ? 'Reading file…' : 'Drop the Excel file here, or click to choose'}</span>
           <span className="mt-1 text-sm text-steel">.xlsx, .xls or .csv. Needs at least the Document Number, Item and Date columns.</span>
-          {!loaded && <span className="mt-2 text-xs text-steel">Loading existing indents…</span>}
         </label>
       )}
 
@@ -146,13 +189,10 @@ export default function ImportPage() {
             </div>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">
               {parsed.detected.map((d) => (
-                <span key={d.field} className={d.header ? 'text-steel' : 'text-amber-700'}>
-                  {d.label}: {d.header ? <span className="text-ink">found</span> : 'not found'}
-                </span>
+                <span key={d.field} className={d.header ? 'text-steel' : 'text-amber-700'}>{d.label}: {d.header ? <span className="text-ink">found</span> : 'not found'}</span>
               ))}
             </div>
           </div>
-
           <div className="flex flex-wrap gap-1 border-b border-line">
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)}
@@ -161,7 +201,6 @@ export default function ImportPage() {
               </button>
             ))}
           </div>
-
           <div className="panel overflow-hidden">
             <div className="max-h-[55vh] overflow-auto">
               <table className="w-full text-sm">
@@ -191,10 +230,9 @@ export default function ImportPage() {
               {!visible.length && <p className="px-4 py-6 text-sm text-steel">No rows in this group.</p>}
             </div>
           </div>
-
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-steel">
-              {counts.new} new and {counts.update} updated rows will be saved. Updates change only NetSuite fields; assignment, dates and remarks stay as they are.
+              {counts.new} new and {counts.update} updated rows will be saved under batch {nextBatchId(history)}. Updates change only NetSuite fields; assignment, PO, receiving and remarks stay as they are.
               {counts.invalid > 0 && ` ${counts.invalid} invalid rows will be skipped.`}
             </p>
             <button className="btn-primary" disabled={!toSave || stage === 'saving'} onClick={save}>
@@ -206,12 +244,9 @@ export default function ImportPage() {
 
       {stage === 'done' && summary && (
         <div className="panel p-5">
-          <h2 className="text-lg font-semibold">Import saved</h2>
+          <h2 className="text-lg font-semibold">Import saved as batch {summary.batchId}</h2>
           <dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
-            {[
-              ['Total rows', summary.totalRows], ['New records', summary.newRows], ['Updated records', summary.updatedRows],
-              ['Duplicate records', summary.duplicateRows], ['Invalid records', summary.invalidRows],
-            ].map(([k, v]) => (
+            {[['Total rows', summary.totalRows], ['New records', summary.newRows], ['Updated records', summary.updatedRows], ['Duplicate records', summary.duplicateRows], ['Invalid records', summary.invalidRows]].map(([k, v]) => (
               <div key={k}><dt className="text-steel">{k}</dt><dd className="text-2xl font-semibold tabular-nums">{v}</dd></div>
             ))}
           </dl>
@@ -222,7 +257,7 @@ export default function ImportPage() {
         </div>
       )}
 
-      <History />
+      <History history={history} indents={indents} err={histErr} />
     </div>
   );
 }

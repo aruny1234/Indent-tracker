@@ -2,22 +2,20 @@ import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import {
   collection, doc, onSnapshot, query, where, orderBy, limit, writeBatch,
-  serverTimestamp, Timestamp, addDoc, updateDoc, setDoc, arrayUnion,
+  serverTimestamp, Timestamp, updateDoc, setDoc, arrayUnion,
 } from 'firebase/firestore';
 import { db, firebaseConfig } from '../firebase.js';
-import { computeStatus, STATUS } from '../utils/status.js';
-import { fmtDate, toDate } from '../utils/dates.js';
+import { enrich, storedStatus, COMPUTED_KEYS } from '../utils/status.js';
+import { indentKey } from '../utils/excel.js';
+import { fmtDate } from '../utils/dates.js';
 
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 const asTimestamp = (v) => (v instanceof Date ? Timestamp.fromDate(v) : v);
-
-// ---------- Live listeners ----------
 const rows = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
+// ---------- Live listeners ----------
 export function watchIndents(uid, isManager, cb, onError) {
-  const q = isManager
-    ? collection(db, 'indents')
-    : query(collection(db, 'indents'), where('assignedUserId', '==', uid)); // employees can only query their own
+  const q = isManager ? collection(db, 'indents') : query(collection(db, 'indents'), where('assignedUserId', '==', uid));
   return onSnapshot(q, (s) => cb(rows(s)), onError);
 }
 export function watchUsers(cb, onError) {
@@ -27,7 +25,7 @@ export function watchNotifications(uid, cb, onError) {
   return onSnapshot(query(collection(db, 'notifications'), where('userId', '==', uid)), (s) => cb(rows(s)), onError);
 }
 export function watchImportHistory(cb, onError) {
-  return onSnapshot(query(collection(db, 'importHistory'), orderBy('importedAt', 'desc'), limit(50)), (s) => cb(rows(s)), onError);
+  return onSnapshot(query(collection(db, 'importHistory'), orderBy('importedAt', 'desc'), limit(100)), (s) => cb(rows(s)), onError);
 }
 export function watchAudit(cb, onError) {
   return onSnapshot(query(collection(db, 'auditLogs'), orderBy('timestamp', 'desc'), limit(300)), (s) => cb(rows(s)), onError);
@@ -35,6 +33,8 @@ export function watchAudit(cb, onError) {
 
 // ---------- Audit ----------
 const auditValue = (v) => {
+  if (v === true) return 'Yes';
+  if (v === false) return 'No';
   if (v == null || v === '') return '—';
   if (v instanceof Date || typeof v?.toDate === 'function') return fmtDate(v);
   return String(v);
@@ -53,8 +53,15 @@ function auditEntry(actor, action, indent, before, after) {
   };
 }
 
-// ---------- Import ----------
-export async function saveImport(classified, fileName, actor) {
+// ---------- Import (with batch id) ----------
+export function nextBatchId(history, now = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const prefix = `IMP-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-`;
+  const used = history.filter((h) => (h.batchId || '').startsWith(prefix)).map((h) => Number(h.batchId.slice(prefix.length)) || 0);
+  return prefix + String(Math.max(0, ...used) + 1).padStart(3, '0');
+}
+
+export async function saveImport(classified, fileName, actor, batchId) {
   const toWrite = classified.filter((r) => r.category === 'new' || r.category === 'update');
   const now = serverTimestamp();
   for (const part of chunk(toWrite, 450)) {
@@ -68,14 +75,15 @@ export async function saveImport(classified, fileName, actor) {
         importedAt: now, updatedAt: now, lastImportFile: fileName,
       };
       if (r.category === 'new') {
-        batch.set(ref, {
-          ...netsuite,
+        const fresh = {
+          ...netsuite, importBatchId: batchId,
           assignedUserId: null, assignedUserName: null, assignedAt: null,
-          expectedReceivingDate: null, actualReceivingDate: null, completedAt: null,
-          trackingStatus: STATUS.NOT_SCHEDULED, remarks: '',
-        });
+          poRequired: true, expectedPoDate: null, poCreationDate: null, poNumber: '', poRemarks: '',
+          expectedReceivingDate: null, actualReceivingDate: null, receivingRemarks: '', remarks: '', completedAt: null,
+        };
+        batch.set(ref, { ...fresh, ...storedStatus(enrich(fresh)) });
       } else {
-        batch.update(ref, netsuite); // only NetSuite fields; assignment and dates are kept
+        batch.update(ref, { ...netsuite, lastImportBatchId: batchId }); // NetSuite fields only
       }
     }
     await batch.commit();
@@ -85,66 +93,111 @@ export async function saveImport(classified, fileName, actor) {
     totalRows: classified.length, newRows: count('new'), updatedRows: count('update'),
     duplicateRows: count('duplicate'), invalidRows: count('invalid'),
   };
-  await addDoc(collection(db, 'importHistory'), {
-    fileName, importedBy: actor.name, importedById: actor.uid, importedAt: serverTimestamp(), ...summary,
+  await setDoc(doc(db, 'importHistory', batchId), {
+    batchId, fileName, importedBy: actor.name, importedById: actor.uid, importedAt: serverTimestamp(), deleted: false, ...summary,
   });
   return summary;
 }
 
-// ---------- Indent updates ----------
-/** `changes` may contain Date objects; they are stored as Firestore Timestamps. */
+/** Deletes every indent line created by this import batch, then records the deletion. */
+export async function deleteImportBatch(history, indentsInBatch, actor) {
+  for (const part of chunk(indentsInBatch, 450)) {
+    const batch = writeBatch(db);
+    part.forEach((i) => batch.delete(doc(db, 'indents', i.id)));
+    await batch.commit();
+  }
+  const b = writeBatch(db);
+  b.update(doc(db, 'importHistory', history.id), {
+    deleted: true, deletedAt: serverTimestamp(), deletedBy: actor.name, deletedById: actor.uid, deletedRecords: indentsInBatch.length,
+  });
+  b.set(doc(collection(db, 'auditLogs')), {
+    userId: actor.uid, userName: actor.name, action: 'DELETE_IMPORT_BATCH',
+    indentId: null, documentNumber: '', itemCode: '', batchId: history.batchId,
+    oldValue: {}, newValue: { batchId: history.batchId, fileName: history.fileName, records: String(indentsInBatch.length) },
+    timestamp: serverTimestamp(),
+  });
+  await b.commit();
+}
+
+export async function deleteIndent(indent, actor) {
+  const snapshot = {};
+  ['documentNumber', 'itemCode', 'displayName', 'quantity', 'assignedUserName', 'poNumber', 'overallStatus', 'importBatchId']
+    .forEach((k) => (snapshot[k] = indent[k]));
+  const entry = auditEntry(actor, 'DELETE_INDENT', indent, snapshot, snapshot);
+  entry.newValue = Object.fromEntries(Object.keys(entry.oldValue).map((k) => [k, 'deleted']));
+  const b = writeBatch(db);
+  b.delete(doc(db, 'indents', indent.id));
+  b.set(doc(collection(db, 'auditLogs')), entry);
+  await b.commit();
+}
+
+// ---------- Edit ----------
+function actionFor(indent, changes) {
+  if (changes.actualReceivingDate && !indent.actualReceivingDate) return 'MATERIAL_RECEIVED';
+  if (changes.poCreationDate && !indent.poCreationDate) return 'PO_CREATED';
+  if ('assignedUserId' in changes) return changes.assignedUserId ? (indent.assignedUserId ? 'REASSIGN' : 'ASSIGN') : 'UNASSIGN';
+  return 'EDIT_INDENT';
+}
+
+/**
+ * Saves changed fields and recalculates statuses.
+ * If Document Number or Item Code changes, the record moves to its new key (Document Number + Item)
+ * so a later re-import of the corrected line updates it instead of creating a duplicate.
+ */
 export async function updateIndent(indent, changes, actor) {
+  const merged = { ...indent, ...changes };
   const data = {};
   for (const [k, v] of Object.entries(changes)) data[k] = asTimestamp(v);
   if ('assignedAt' in changes) data.assignedAt = changes.assignedAt ? serverTimestamp() : null;
   if ('actualReceivingDate' in changes) data.completedAt = changes.actualReceivingDate ? serverTimestamp() : null;
-  const status = computeStatus({ ...indent, ...changes });
-  if (status !== indent.trackingStatus) data.trackingStatus = status;
-  data.updatedAt = serverTimestamp();
-  data.updatedBy = actor.uid;
-
-  let action = 'Updated';
-  if ('assignedUserId' in changes) action = changes.assignedUserId ? 'Assigned' : 'Unassigned';
-  else if ('actualReceivingDate' in changes) action = changes.actualReceivingDate ? 'Marked received' : 'Reopened';
-  else if ('expectedReceivingDate' in changes) action = 'Expected date changed';
+  Object.assign(data, storedStatus(enrich(merged)), { updatedAt: serverTimestamp(), updatedBy: actor.uid });
 
   const auditChanges = { ...changes };
   delete auditChanges.assignedAt;
   delete auditChanges.assignedUserId;
 
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'indents', indent.id), data);
-  batch.set(doc(collection(db, 'auditLogs')), auditEntry(actor, action, indent, indent, auditChanges));
-  await batch.commit();
+  const newId = indentKey(merged.documentNumber, merged.itemCode);
+  const moved = newId !== indent.id;
+  const b = writeBatch(db);
+  if (moved) {
+    const raw = { ...indent };
+    COMPUTED_KEYS.forEach((k) => delete raw[k]);
+    b.set(doc(db, 'indents', newId), { ...raw, ...data });
+    b.delete(doc(db, 'indents', indent.id));
+  } else {
+    b.update(doc(db, 'indents', indent.id), data);
+  }
+  b.set(doc(collection(db, 'auditLogs')), auditEntry(actor, actionFor(indent, changes), { ...merged, id: newId }, indent, auditChanges));
+  await b.commit();
+  return newId;
 }
 
-export async function assignIndents(indents, user, expectedDate, remarks, actor) {
+/** opts: { poRequired: true|false|undefined, expectedPoDate, expectedReceivingDate, remarks } */
+export async function assignIndents(indents, user, opts, actor) {
   for (const part of chunk(indents, 200)) {
-    const batch = writeBatch(db);
+    const b = writeBatch(db);
     for (const ind of part) {
       const changes = { assignedUserName: user.name };
-      if (expectedDate) changes.expectedReceivingDate = expectedDate;
-      if (remarks) changes.remarks = remarks;
-      const merged = { ...ind, ...changes };
-      batch.update(doc(db, 'indents', ind.id), {
+      if (opts.poRequired !== undefined) changes.poRequired = opts.poRequired;
+      if (opts.expectedPoDate) changes.expectedPoDate = opts.expectedPoDate;
+      if (opts.expectedReceivingDate) changes.expectedReceivingDate = opts.expectedReceivingDate;
+      if (opts.remarks) changes.remarks = opts.remarks;
+      const merged = { ...ind, ...changes, assignedUserId: user.uid };
+      b.update(doc(db, 'indents', ind.id), {
         ...Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, asTimestamp(v)])),
         assignedUserId: user.uid,
         assignedAt: serverTimestamp(),
-        trackingStatus: computeStatus(merged),
+        ...storedStatus(enrich(merged)),
         updatedAt: serverTimestamp(),
         updatedBy: actor.uid,
       });
-      batch.set(doc(collection(db, 'auditLogs')), auditEntry(actor, ind.assignedUserId ? 'Reassigned' : 'Assigned', ind, ind, changes));
+      b.set(doc(collection(db, 'auditLogs')), auditEntry(actor, ind.assignedUserId ? 'REASSIGN' : 'ASSIGN', ind, ind, changes));
     }
-    await batch.commit();
+    await b.commit();
   }
 }
 
 // ---------- Users ----------
-/**
- * Creating a login from the browser normally signs the manager out.
- * A temporary second Firebase app avoids that.
- */
 export async function createEmployee(data, actor) {
   const secondary = initializeApp(firebaseConfig, `create-user-${Date.now()}`);
   try {
@@ -173,13 +226,11 @@ export function markRead(id) {
 }
 export async function markAllRead(ids) {
   for (const part of chunk(ids, 450)) {
-    const batch = writeBatch(db);
-    part.forEach((id) => batch.update(doc(db, 'notifications', id), { read: true }));
-    await batch.commit();
+    const b = writeBatch(db);
+    part.forEach((id) => b.update(doc(db, 'notifications', id), { read: true }));
+    await b.commit();
   }
 }
 export function createNotification(id, data) {
   return setDoc(doc(db, 'notifications', id), { ...data, read: false, createdAt: serverTimestamp(), notificationDate: Timestamp.now() });
 }
-
-export { toDate };

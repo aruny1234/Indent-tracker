@@ -1,24 +1,38 @@
 import * as XLSX from 'xlsx';
 import { fmtDate, dateKey } from './dates.js';
-import { delayDays } from './status.js';
+import { isPoRequired } from './status.js';
 
 export function exportIndents(rows, name = 'indents') {
+  const d = (v) => fmtDate(v, '');
   const data = rows.map((i) => ({
-    'Date': fmtDate(i.date, ''),
+    'Date': d(i.date),
     'Document Number': i.documentNumber,
     'Order Type': i.orderType,
     'NetSuite Status': i.netsuiteStatus,
-    'Item': i.itemCode,
-    'Display Name': i.displayName,
-    'PR Quantity': i.quantity,
+    'Item Code': i.itemCode,
+    'Item Description': i.displayName,
+    'Quantity': i.quantity,
     'Units': i.units,
     'Last Purchase Price': i.lastPurchasePrice,
     'Created By': i.createdBy,
+    'Import Batch': i.importBatchId || '',
     'Assigned To': i.assignedUserName || '',
-    'Expected Receiving Date': fmtDate(i.expectedReceivingDate, ''),
-    'Actual Receiving Date': fmtDate(i.actualReceivingDate, ''),
-    'Tracking Status': i.status,
-    'Delay (days)': delayDays(i) ?? '',
+    'PO Required': isPoRequired(i) ? 'Yes' : 'No',
+    'Expected PO Date': d(i.expectedPoDate),
+    'PO Creation Date': d(i.poCreationDate),
+    'PO Number': i.poNumber || '',
+    'PO Status': i.poStatus,
+    'PO Delay (days)': i.poDelayDays ?? '',
+    'PO Performance': i.poPerformance,
+    'PO Remarks': i.poRemarks || '',
+    'Expected Receiving Date': d(i.expectedReceivingDate),
+    'Actual Receiving Date': d(i.actualReceivingDate),
+    'Material Status': i.materialStatus,
+    'Material Delay (days)': i.materialDelayDays ?? '',
+    'Material Performance': i.materialPerformance,
+    'Receiving Remarks': i.receivingRemarks || '',
+    'Overall Status': i.overallStatus,
+    'Performance Status': i.performanceStatus,
     'Remarks': i.remarks || '',
   }));
   const ws = XLSX.utils.json_to_sheet(data);

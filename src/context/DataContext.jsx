@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { useAuth } from './AuthContext.jsx';
 import { watchIndents, watchUsers, watchNotifications } from '../services/db.js';
 import { syncMyAlerts, showBrowserNotification, listenForegroundPush } from '../services/alerts.js';
-import { computeStatus, daysLeft } from '../utils/status.js';
+import { enrich } from '../utils/status.js';
 import { startOfDay } from '../utils/dates.js';
 
 const DataCtx = createContext(null);
@@ -49,7 +49,7 @@ export function DataProvider({ children }) {
   }, []);
 
   const indents = useMemo(
-    () => raw.map((i) => ({ ...i, status: computeStatus(i, today), daysLeft: daysLeft(i, today) })),
+    () => raw.map((i) => enrich(i, today)),
     [raw, today]
   );
 

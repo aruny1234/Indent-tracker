@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useData } from '../../context/DataContext.jsx';
-import { PageHeader, Loading, EmptyState, StatRow, StatusCell } from '../../components/ui.jsx';
-import ReceivingStrip from '../../components/ReceivingStrip.jsx';
+import { PageHeader, Loading, EmptyState, StatRow, StageCell, otdTone } from '../../components/ui.jsx';
+import DueStrip from '../../components/DueStrip.jsx';
 import { summarize, byEmployee, byDepartment } from '../../utils/performance.js';
-import { STATUS, sortIndents } from '../../utils/status.js';
+import { PO, MAT, OVERALL, sortIndents, poHint, materialHint } from '../../utils/status.js';
 import { fmtDate, toInputValue } from '../../utils/dates.js';
+
+const pctText = (v) => (v == null ? '—' : `${v}%`);
 
 function PerfTable({ title, rows, firstCol, showDept }) {
   return (
@@ -18,14 +20,21 @@ function PerfTable({ title, rows, firstCol, showDept }) {
           <table className="w-full text-sm">
             <thead className="bg-canvas">
               <tr>
-                <th className="th">{firstCol}</th>
-                {showDept && <th className="th">Department</th>}
-                <th className="th text-right">Assigned</th>
-                <th className="th text-right">Open</th>
+                <th className="th" rowSpan={2}>{firstCol}</th>
+                {showDept && <th className="th" rowSpan={2}>Department</th>}
+                <th className="th text-right" rowSpan={2}>Assigned</th>
+                <th className="th border-l border-line text-center" colSpan={4}>Stage 1: PO</th>
+                <th className="th border-l border-line text-center" colSpan={4}>Stage 2: Material</th>
+                <th className="th border-l border-line text-right" rowSpan={2}>Completed</th>
+              </tr>
+              <tr>
+                <th className="th border-l border-line text-right">Pending</th>
                 <th className="th text-right">Overdue</th>
-                <th className="th text-right">On time</th>
-                <th className="th text-right">Late</th>
-                <th className="th text-right" title="On-time delivery: on-time receipts ÷ (on-time + late + overdue)">OTD %</th>
+                <th className="th text-right">On time %</th>
+                <th className="th text-right">Avg delay</th>
+                <th className="th border-l border-line text-right">Pending</th>
+                <th className="th text-right">Overdue</th>
+                <th className="th text-right">On time %</th>
                 <th className="th text-right">Avg delay</th>
               </tr>
             </thead>
@@ -35,14 +44,15 @@ function PerfTable({ title, rows, firstCol, showDept }) {
                   <td className="td font-medium">{r.name}</td>
                   {showDept && <td className="td text-steel">{r.department}</td>}
                   <td className="td text-right">{r.total}</td>
-                  <td className="td text-right">{r.open}</td>
-                  <td className={`td text-right ${r.overdue ? 'font-semibold text-red-700' : ''}`}>{r.overdue}</td>
-                  <td className="td text-right">{r.onTime}</td>
-                  <td className="td text-right">{r.late}</td>
-                  <td className={`td text-right font-medium ${r.otd == null ? 'text-steel' : r.otd >= 90 ? 'text-emerald-700' : r.otd >= 75 ? 'text-amber-700' : 'text-red-700'}`}>
-                    {r.otd == null ? '—' : `${r.otd}%`}
-                  </td>
-                  <td className="td text-right">{r.late ? `${r.avgDelay} d` : '—'}</td>
+                  <td className="td border-l border-line text-right">{r.poPending + r.assigned}</td>
+                  <td className={`td text-right ${r.poOverdue ? 'font-semibold text-red-700' : ''}`}>{r.poOverdue}</td>
+                  <td className={`td text-right font-medium ${otdTone(r.poOtd)}`}>{pctText(r.poOtd)}</td>
+                  <td className="td text-right">{r.poDelayed ? `${r.poAvgDelay} d` : '—'}</td>
+                  <td className="td border-l border-line text-right">{r.materialPending}</td>
+                  <td className={`td text-right ${r.matOverdue ? 'font-semibold text-red-700' : ''}`}>{r.matOverdue}</td>
+                  <td className={`td text-right font-medium ${otdTone(r.matOtd)}`}>{pctText(r.matOtd)}</td>
+                  <td className="td text-right">{r.matDelayed ? `${r.matAvgDelay} d` : '—'}</td>
+                  <td className="td border-l border-line text-right">{r.completed}</td>
                 </tr>
               ))}
             </tbody>
@@ -60,11 +70,11 @@ export default function Dashboard() {
   const employees = useMemo(() => byEmployee(indents, users), [indents, users]);
   const departments = useMemo(() => byDepartment(indents, users), [indents, users]);
   const attention = useMemo(
-    () => indents.filter((i) => i.status === STATUS.OVERDUE || i.status === STATUS.URGENT).sort(sortIndents).slice(0, 8),
+    () => indents.filter((i) => [PO.OVERDUE, PO.DUE_TODAY].includes(i.poStatus) || [MAT.OVERDUE, MAT.DUE_TODAY].includes(i.materialStatus)).sort(sortIndents).slice(0, 10),
     [indents]
   );
-  const unassigned = indents.filter((i) => !i.assignedUserId).length;
   const go = (qs) => navigate(`/indents?${qs}`);
+  const st = (prefix, v) => go(`status=${encodeURIComponent(prefix + v)}`);
 
   if (!loaded) return <Loading />;
   if (!indents.length)
@@ -78,47 +88,54 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Dashboard" subtitle={`Today is ${fmtDate(today)}`}
-        actions={<Link className="btn-primary" to="/import">Import NetSuite Excel</Link>} />
-
-      <ReceivingStrip indents={indents} today={today}
-        onPickOverdue={() => go(`status=${encodeURIComponent(STATUS.OVERDUE)}`)}
-        onPickDay={(d) => go(`due=${toInputValue(d)}`)} />
+      <PageHeader title="Dashboard" subtitle={`Today is ${fmtDate(today)}`} actions={<Link className="btn-primary" to="/import">Import NetSuite Excel</Link>} />
 
       <StatRow items={[
-        { label: 'Indent items', value: s.total, onClick: () => go('') },
-        { label: 'Unassigned', value: unassigned, tone: unassigned ? 'text-amber-700' : '', onClick: () => go('assignee=__none') },
-        { label: 'Overdue', value: s.overdue, tone: s.overdue ? 'text-red-700' : '', onClick: () => go(`status=${encodeURIComponent(STATUS.OVERDUE)}`) },
-        { label: 'Due within 7 days', value: s.urgent + s.dueSoon, onClick: () => go('status=open') },
+        { label: 'Total indents', value: s.total, onClick: () => go('') },
+        { label: 'Pending assignment', value: s.pendingAssignment, tone: s.pendingAssignment ? 'text-amber-700' : '', onClick: () => st('o:', OVERALL.PENDING_ASSIGNMENT) },
+        { label: 'Assigned (no target yet)', value: s.assigned, onClick: () => st('o:', OVERALL.ASSIGNED) },
+        { label: 'PO pending', value: s.poPending, onClick: () => st('o:', OVERALL.PO_PENDING) },
+        { label: 'PO overdue', value: s.poOverdue, tone: s.poOverdue ? 'text-red-700' : '', onClick: () => st('p:', PO.OVERDUE) },
+        { label: 'Material pending', value: s.materialPending, onClick: () => st('o:', OVERALL.MATERIAL_PENDING) },
+        { label: 'Material overdue', value: s.matOverdue, tone: s.matOverdue ? 'text-red-700' : '', onClick: () => st('m:', MAT.OVERDUE) },
         { label: 'Completed', value: s.completed, onClick: () => go('status=done') },
-        { label: 'On-time delivery', value: s.otd == null ? '—' : `${s.otd}%` },
+        { label: 'PO on time', value: pctText(s.poOtd), tone: otdTone(s.poOtd) },
+        { label: 'Material on time', value: pctText(s.matOtd), tone: otdTone(s.matOtd) },
       ]} />
+
+      <DueStrip indents={indents} today={today}
+        onPickOverdue={(stage) => (stage === 'po' ? st('p:', PO.OVERDUE) : st('m:', MAT.OVERDUE))}
+        onPickDay={(stage, d) => go(`due=${toInputValue(d)}&stage=${stage}`)} />
 
       {attention.length > 0 && (
         <section className="panel overflow-hidden">
           <div className="flex items-center justify-between border-b border-line px-4 py-3">
-            <h2 className="font-semibold">Needs follow-up</h2>
-            <Link to={`/indents?status=open`} className="text-sm text-teal hover:underline">All open items</Link>
+            <h2 className="font-semibold">Needs follow-up today</h2>
+            <Link to="/indents?status=open" className="text-sm text-teal hover:underline">All open items</Link>
           </div>
-          <ul className="divide-y divide-line">
-            {attention.map((i) => (
-              <li key={i.id} className="flex items-start justify-between gap-3 px-4 py-3 text-sm">
-                <div className="min-w-0">
-                  <div className="font-medium">{i.documentNumber}</div>
-                  <div className="truncate text-steel">{i.displayName || i.itemCode}. {i.assignedUserName || 'Unassigned'}</div>
-                </div>
-                <StatusCell indent={i} />
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-canvas"><tr><th className="th">Indent</th><th className="th">Assigned to</th><th className="th">PO</th><th className="th">Material</th></tr></thead>
+              <tbody className="divide-y divide-line">
+                {attention.map((i) => (
+                  <tr key={i.id}>
+                    <td className="td"><div className="font-medium">{i.documentNumber}</div><div className="text-xs text-steel">{i.displayName || i.itemCode}</div></td>
+                    <td className="td whitespace-nowrap">{i.assignedUserName || <span className="text-steel">Unassigned</span>}</td>
+                    <td className="td"><StageCell status={i.poStatus} hint={poHint(i)} /></td>
+                    <td className="td"><StageCell status={i.materialStatus} hint={materialHint(i)} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
       <PerfTable title="Employee performance" rows={employees} firstCol="Employee" showDept />
       <PerfTable title="Department performance" rows={departments} firstCol="Department" />
       <p className="text-xs text-steel">
-        OTD % (on-time delivery) = items received on or before the expected date ÷ (on time + received late + still overdue).
-        Avg delay is the average number of days late for items received late.
+        On time % for each stage = done on or before the expected date ÷ (on time + done late + still overdue).
+        Avg delay = average days late for items done late. PO pending includes assigned items still waiting for a PO target date.
       </p>
     </div>
   );

@@ -1,27 +1,41 @@
-import { STATUS, delayDays } from './status.js';
+import { OVERALL, PO, MAT, PERF } from './status.js';
 import { toDate } from './dates.js';
 
+const pct = (a, b) => (b ? Math.round((100 * a) / b) : null);
+
 /**
- * OTD % (On-Time Delivery) = on-time receipts / (on-time + late receipts + currently overdue).
- * Overdue items count as misses even before they arrive, so the figure cannot look better by leaving items open.
+ * On-time % for each stage = on-time / (on-time + delayed + currently overdue).
+ * Overdue items count as misses before they are done, so leaving work open never improves the score.
  */
 export function summarize(list) {
-  const s = { total: list.length, open: 0, completed: 0, onTime: 0, late: 0, overdue: 0, urgent: 0, dueSoon: 0, pending: 0, notScheduled: 0, delaySum: 0 };
+  const s = {
+    total: list.length, pendingAssignment: 0, assigned: 0, poPending: 0, materialPending: 0, completed: 0,
+    poOverdue: 0, poDue: 0, poCreated: 0, poOnTime: 0, poDelayed: 0, poDelaySum: 0,
+    matOverdue: 0, matDue: 0, matOnTime: 0, matDelayed: 0, matDelaySum: 0,
+  };
   for (const i of list) {
-    switch (i.status) {
-      case STATUS.DONE_ON_TIME: s.completed++; s.onTime++; break;
-      case STATUS.DONE_LATE: s.completed++; s.late++; s.delaySum += delayDays(i) || 0; break;
-      case STATUS.COMPLETED: s.completed++; break;
-      case STATUS.OVERDUE: s.open++; s.overdue++; break;
-      case STATUS.URGENT: s.open++; s.urgent++; break;
-      case STATUS.DUE_SOON: s.open++; s.dueSoon++; break;
-      case STATUS.PENDING: s.open++; s.pending++; break;
-      default: s.open++; s.notScheduled++;
-    }
+    if (i.overallStatus === OVERALL.PENDING_ASSIGNMENT) s.pendingAssignment++;
+    else if (i.overallStatus === OVERALL.ASSIGNED) s.assigned++;
+    else if (i.overallStatus === OVERALL.PO_PENDING) s.poPending++;
+    else if (i.overallStatus === OVERALL.MATERIAL_PENDING) s.materialPending++;
+    else if (i.overallStatus === OVERALL.COMPLETED) s.completed++;
+
+    if (i.poStatus === PO.OVERDUE) s.poOverdue++;
+    if (i.poStatus === PO.DUE_TODAY || i.poStatus === PO.DUE_SOON) s.poDue++;
+    if (i.poStatus === PO.CREATED) s.poCreated++;
+    if (i.poPerformance === PERF.ON_TIME) s.poOnTime++;
+    if (i.poPerformance === PERF.DELAYED) { s.poDelayed++; s.poDelaySum += i.poDelayDays; }
+
+    if (i.materialStatus === MAT.OVERDUE) s.matOverdue++;
+    if (i.materialStatus === MAT.DUE_TODAY || i.materialStatus === MAT.DUE_SOON) s.matDue++;
+    if (i.materialPerformance === PERF.ON_TIME) s.matOnTime++;
+    if (i.materialPerformance === PERF.DELAYED) { s.matDelayed++; s.matDelaySum += i.materialDelayDays; }
   }
-  const base = s.onTime + s.late + s.overdue;
-  s.otd = base ? Math.round((100 * s.onTime) / base) : null;
-  s.avgDelay = s.late ? +(s.delaySum / s.late).toFixed(1) : 0;
+  s.open = s.total - s.completed;
+  s.poOtd = pct(s.poOnTime, s.poOnTime + s.poDelayed + s.poOverdue);
+  s.matOtd = pct(s.matOnTime, s.matOnTime + s.matDelayed + s.matOverdue);
+  s.poAvgDelay = s.poDelayed ? +(s.poDelaySum / s.poDelayed).toFixed(1) : 0;
+  s.matAvgDelay = s.matDelayed ? +(s.matDelaySum / s.matDelayed).toFixed(1) : 0;
   return s;
 }
 
@@ -38,7 +52,7 @@ export function byEmployee(indents, users) {
   for (const [uid, list] of groups) {
     if (!users.some((u) => u.uid === uid)) rows.push({ id: uid, name: list[0].assignedUserName || 'Unknown user', department: '—', ...summarize(list) });
   }
-  return rows.sort((a, b) => b.overdue - a.overdue || b.total - a.total || a.name.localeCompare(b.name));
+  return rows.sort((a, b) => b.poOverdue + b.matOverdue - (a.poOverdue + a.matOverdue) || b.total - a.total || a.name.localeCompare(b.name));
 }
 
 export function byDepartment(indents, users) {
@@ -53,18 +67,19 @@ export function byDepartment(indents, users) {
   return [...groups.entries()].map(([name, list]) => ({ id: name, name, ...summarize(list) })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** On-time vs late receipts per month (by actual receiving date). */
-export function monthly(list, months, today) {
+/** On-time vs delayed per month. stage 'po' uses PO creation date, 'mat' uses actual receiving date. */
+export function monthly(list, months, today, stage) {
   const out = [];
   for (let k = months - 1; k >= 0; k--) {
     const d = new Date(today.getFullYear(), today.getMonth() - k, 1);
     out.push({ label: d.toLocaleString('en-IN', { month: 'short' }) + ' ' + String(d.getFullYear()).slice(2), y: d.getFullYear(), m: d.getMonth(), onTime: 0, late: 0 });
   }
   for (const i of list) {
-    if (i.status !== STATUS.DONE_ON_TIME && i.status !== STATUS.DONE_LATE) continue;
-    const a = toDate(i.actualReceivingDate);
-    const row = out.find((r) => r.y === a.getFullYear() && r.m === a.getMonth());
-    if (row) i.status === STATUS.DONE_ON_TIME ? row.onTime++ : row.late++;
+    const perf = stage === 'po' ? i.poPerformance : i.materialPerformance;
+    if (!perf) continue;
+    const d = toDate(stage === 'po' ? i.poCreationDate : i.actualReceivingDate);
+    const row = out.find((r) => r.y === d.getFullYear() && r.m === d.getMonth());
+    if (row) perf === PERF.ON_TIME ? row.onTime++ : row.late++;
   }
   return out;
 }
