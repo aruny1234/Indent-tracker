@@ -9,7 +9,7 @@ import AssignModal from '../../components/AssignModal.jsx';
 import { filterIndents } from '../../utils/filters.js';
 import { OVERALL_LIST, PO_LIST, MAT_LIST, sortIndents } from '../../utils/status.js';
 import { exportIndents } from '../../utils/exportExcel.js';
-import { deleteIndent } from '../../services/db.js';
+import { deleteIndent, deleteIndents } from '../../services/db.js';
 import { fmtDate, fromInputValue } from '../../utils/dates.js';
 
 export default function Indents() {
@@ -29,6 +29,9 @@ export default function Indents() {
   const [toDelete, setToDelete] = useState(null);
   const [delBusy, setDelBusy] = useState(false);
   const [delErr, setDelErr] = useState('');
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkDone, setBulkDone] = useState(0);
 
   const setParam = (k, v) => {
     const p = new URLSearchParams(params);
@@ -62,6 +65,21 @@ export default function Indents() {
     setDelBusy(false);
   }
 
+  async function confirmBulkDelete() {
+    setDelBusy(true);
+    setDelErr('');
+    setBulkDone(0);
+    try {
+      await deleteIndents(selectedItems, profile, setBulkDone);
+      setSelected(new Set());
+      setBulkOpen(false);
+    } catch (e) {
+      setDelErr(`Stopped after ${bulkDone} deletions: ${e.message}. You can select the remaining items and try again.`);
+    }
+    setDelBusy(false);
+  }
+  const needsTyping = selectedItems.length > 20;
+
   if (!loaded) return <Loading />;
 
   return (
@@ -70,6 +88,10 @@ export default function Indents() {
         actions={
           <>
             <button className="btn-secondary" onClick={() => exportIndents(rows)} disabled={!rows.length}>Export to Excel</button>
+            <button className="btn-secondary text-red-700 hover:bg-red-50" disabled={!selected.size}
+              onClick={() => { setDelErr(''); setBulkText(''); setBulkOpen(true); }}>
+              Delete selected{selected.size ? ` (${selected.size})` : ''}
+            </button>
             <button className="btn-primary" onClick={() => setAssigning(true)} disabled={!selected.size}>Assign selected{selected.size ? ` (${selected.size})` : ''}</button>
           </>
         } />
@@ -120,6 +142,25 @@ export default function Indents() {
       {assigning && (
         <AssignModal items={selectedItems} users={users} onClose={() => setAssigning(false)}
           onDone={() => { setAssigning(false); setSelected(new Set()); }} />
+      )}
+      {bulkOpen && (
+        <ConfirmDialog title={`Delete ${selectedItems.length} indents`}
+          message={`Are you sure you want to delete ${selectedItems.length} selected indent${selectedItems.length === 1 ? '' : 's'}?`}
+          confirmLabel={`Delete ${selectedItems.length}`}
+          busyLabel={`Deleting… ${bulkDone} of ${selectedItems.length}`}
+          confirmDisabled={needsTyping && bulkText.trim().toUpperCase() !== 'DELETE'}
+          detail={
+            <>
+              <p>This removes the selected indent lines, including any assignment, PO and receiving details entered on them. Users, logins and import history are not affected. Each deletion is recorded in the audit log. This cannot be undone.</p>
+              {needsTyping && (
+                <div className="mt-3">
+                  <label className="label" htmlFor="bulk-confirm">Type DELETE to confirm</label>
+                  <input id="bulk-confirm" className="field" value={bulkText} onChange={(e) => setBulkText(e.target.value)} autoComplete="off" />
+                </div>
+              )}
+            </>
+          }
+          busy={delBusy} error={delErr} onConfirm={confirmBulkDelete} onClose={() => setBulkOpen(false)} />
       )}
       {toDelete && (
         <ConfirmDialog title="Delete indent" message="Are you sure you want to delete this indent?"
