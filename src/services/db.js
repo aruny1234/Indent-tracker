@@ -131,6 +131,27 @@ export async function deleteIndent(indent, actor) {
   await b.commit();
 }
 
+/** Deletes many indents; one audit entry per indent. Returns how many were deleted. */
+export async function deleteIndents(list, actor, onProgress) {
+  let done = 0;
+  for (const part of chunk(list, 200)) {
+    const b = writeBatch(db);
+    for (const indent of part) {
+      const snapshot = {};
+      ['documentNumber', 'itemCode', 'displayName', 'quantity', 'assignedUserName', 'poNumber', 'overallStatus', 'importBatchId']
+        .forEach((k) => (snapshot[k] = indent[k]));
+      const entry = auditEntry(actor, 'DELETE_INDENT', indent, snapshot, snapshot);
+      entry.newValue = Object.fromEntries(Object.keys(entry.oldValue).map((k) => [k, 'deleted']));
+      b.delete(doc(db, 'indents', indent.id));
+      b.set(doc(collection(db, 'auditLogs')), entry);
+    }
+    await b.commit();
+    done += part.length;
+    onProgress?.(done);
+  }
+  return done;
+}
+
 // ---------- Edit ----------
 function actionFor(indent, changes) {
   if (changes.actualReceivingDate && !indent.actualReceivingDate) return 'MATERIAL_RECEIVED';
