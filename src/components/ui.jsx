@@ -59,13 +59,13 @@ export function Modal({ title, onClose, children, footer, wide }) {
 }
 
 /** Confirmation for destructive actions. */
-export function ConfirmDialog({ title, message, detail, confirmLabel = 'Delete', busy, error, onConfirm, onClose }) {
+export function ConfirmDialog({ title, message, detail, confirmLabel = 'Delete', busy, busyLabel = 'Deleting…', confirmDisabled, error, onConfirm, onClose }) {
   return (
     <Modal title={title} onClose={busy ? () => {} : onClose}
       footer={
         <>
           <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn-danger" onClick={onConfirm} disabled={busy}>{busy ? 'Deleting…' : confirmLabel}</button>
+          <button className="btn-danger" onClick={onConfirm} disabled={busy || confirmDisabled}>{busy ? busyLabel : confirmLabel}</button>
         </>
       }>
       <p className="text-sm font-medium">{message}</p>
