@@ -4,13 +4,14 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { updateIndent } from '../services/db.js';
 import { enrich, poHint, materialHint, isPoRequired } from '../utils/status.js';
 import { FIELD_LABELS } from '../utils/fields.js';
-import { indentKey } from '../utils/excel.js';
+import { lineKey } from '../utils/excel.js';
 import { fmtDate, fmtDateTime, toInputValue, fromInputValue, startOfDay } from '../utils/dates.js';
 
 const NETSUITE = [
   ['documentNumber', 'text'], ['date', 'date'], ['orderType', 'text'], ['netsuiteStatus', 'text'],
   ['itemCode', 'text'], ['displayName', 'text'], ['quantity', 'number'], ['units', 'text'],
   ['lastPurchasePrice', 'number'], ['createdBy', 'text'],
+  ['department', 'text'], ['location', 'text'], ['subsidiary', 'text'],
 ];
 const TRACKING = [
   ['expectedPoDate', 'date'], ['poCreationDate', 'date'], ['poNumber', 'text'], ['poRemarks', 'textarea'],
@@ -91,7 +92,7 @@ export default function IndentModal({ indent, users = [], existingIds, onClose }
     const e = [...errors];
     const endToday = startOfDay(new Date());
     if (!String(merged.documentNumber || '').trim()) e.push('Document Number cannot be empty.');
-    if (!String(merged.itemCode || '').trim()) e.push('Item Code cannot be empty.');
+    if (!String(merged.itemCode || '').trim() && !String(merged.displayName || '').trim()) e.push('Enter an Item Code or an Item Description.');
     if (isManager && !f.date) e.push('Date cannot be empty.');
     if (fromInputValue(f.poCreationDate) > endToday) e.push('PO Creation Date cannot be in the future.');
     if (fromInputValue(f.actualReceivingDate) > endToday) e.push('Actual Receiving Date cannot be in the future.');
@@ -100,7 +101,8 @@ export default function IndentModal({ indent, users = [], existingIds, onClose }
       if (!f.poCreationDate && f.poNumber.trim()) e.push('Enter the PO Creation Date together with the PO Number.');
       if (f.actualReceivingDate && !f.poCreationDate) e.push('Stage 1 is not finished: enter the PO Creation Date and PO Number before the receiving date.');
     }
-    const newId = indentKey(merged.documentNumber, merged.itemCode);
+    const identityChanged = 'documentNumber' in changes || 'itemCode' in changes || (!merged.itemCode && 'displayName' in changes);
+    const newId = identityChanged ? lineKey(merged.documentNumber, merged.itemCode, merged.displayName) : indent.id;
     if (newId !== indent.id && existingIds?.has(newId)) e.push('Another indent line with this Document Number and Item Code already exists.');
     return e;
   }
@@ -157,7 +159,7 @@ export default function IndentModal({ indent, users = [], existingIds, onClose }
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="font-medium">{indent.displayName || '—'}</div>
-            <div className="text-sm text-steel">{indent.itemCode}{indent.importBatchId ? `. Batch ${indent.importBatchId}` : ''}</div>
+            <div className="text-sm text-steel">{indent.itemCode || 'No item code'}{indent.importBatchId ? `. Batch ${indent.importBatchId}` : ''}</div>
           </div>
           <StatusBadge status={preview.overallStatus} />
         </div>
@@ -175,6 +177,8 @@ export default function IndentModal({ indent, users = [], existingIds, onClose }
               <Calc label="NetSuite status">{dash(indent.netsuiteStatus)}</Calc>
               <Calc label="Last purchase price">{indent.lastPurchasePrice != null ? `₹ ${Number(indent.lastPurchasePrice).toLocaleString('en-IN')}` : '—'}</Calc>
               <Calc label="Raised by">{dash(indent.createdBy)}</Calc>
+              <Calc label="Department">{dash(indent.department)}</Calc>
+              <Calc label="Location">{dash(indent.location)}</Calc>
             </dl>
           )}
         </Section>

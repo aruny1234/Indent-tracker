@@ -3,6 +3,7 @@ export const FIELD_LABELS = {
   documentNumber: 'Document Number', date: 'Date', orderType: 'Order Type', netsuiteStatus: 'NetSuite Status',
   itemCode: 'Item Code', displayName: 'Item Description', quantity: 'Quantity', units: 'Units',
   lastPurchasePrice: 'Last Purchase Price', createdBy: 'Created By',
+  department: 'Department', location: 'Location', subsidiary: 'Subsidiary',
   assignedUserName: 'Assigned To',
   poRequired: 'PO Required', expectedPoDate: 'Expected PO Date', poCreationDate: 'PO Creation Date',
   poNumber: 'PO Number', poRemarks: 'PO Remarks',

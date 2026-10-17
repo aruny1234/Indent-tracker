@@ -31,7 +31,7 @@ export function filterIndents(list, { search = '', status = '', assignee = '', o
       if (toInputValue(dueStage === 'po' ? i.expectedPoDate : i.expectedReceivingDate) !== due) return false;
     }
     if (q) {
-      const hay = [i.documentNumber, i.itemCode, i.displayName, i.createdBy, i.assignedUserName, i.poNumber, i.remarks, i.importBatchId];
+      const hay = [i.documentNumber, i.itemCode, i.displayName, i.createdBy, i.assignedUserName, i.poNumber, i.remarks, i.importBatchId, i.department, i.location];
       if (!hay.some((v) => String(v ?? '').toLowerCase().includes(q))) return false;
     }
     return true;

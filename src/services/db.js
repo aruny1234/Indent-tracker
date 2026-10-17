@@ -6,7 +6,7 @@ import {
 } from 'firebase/firestore';
 import { db, firebaseConfig } from '../firebase.js';
 import { enrich, storedStatus, COMPUTED_KEYS } from '../utils/status.js';
-import { indentKey } from '../utils/excel.js';
+import { lineKey } from '../utils/excel.js';
 import { fmtDate } from '../utils/dates.js';
 
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
@@ -72,6 +72,7 @@ export async function saveImport(classified, fileName, actor, batchId) {
         documentNumber: r.documentNumber, itemCode: r.itemCode, date: Timestamp.fromDate(r.date),
         orderType: r.orderType, netsuiteStatus: r.netsuiteStatus, displayName: r.displayName,
         quantity: r.quantity, units: r.units, lastPurchasePrice: r.lastPurchasePrice, createdBy: r.createdBy,
+        department: r.department || '', location: r.location || '', subsidiary: r.subsidiary || '',
         importedAt: now, updatedAt: now, lastImportFile: fileName,
       };
       if (r.category === 'new') {
@@ -177,7 +178,8 @@ export async function updateIndent(indent, changes, actor) {
   delete auditChanges.assignedAt;
   delete auditChanges.assignedUserId;
 
-  const newId = indentKey(merged.documentNumber, merged.itemCode);
+  const identityChanged = 'documentNumber' in changes || 'itemCode' in changes || (!merged.itemCode && 'displayName' in changes);
+  const newId = identityChanged ? lineKey(merged.documentNumber, merged.itemCode, merged.displayName) : indent.id;
   const moved = newId !== indent.id;
   const b = writeBatch(db);
   if (moved) {

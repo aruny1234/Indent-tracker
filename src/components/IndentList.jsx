@@ -43,11 +43,11 @@ export default function IndentList({ rows, onOpen, onDelete, selectable = false,
                 )}
                 <td className="td whitespace-nowrap">
                   <div className="font-medium">{r.documentNumber}</div>
-                  <div className="text-xs text-steel">{fmtDate(r.date)}{r.orderType ? `, ${r.orderType}` : ''}</div>
+                  <div className="text-xs text-steel">{[fmtDate(r.date), r.orderType, r.department].filter(Boolean).join(', ')}</div>
                 </td>
                 <td className="td min-w-[200px]">
                   <div>{r.displayName || '—'}</div>
-                  <div className="text-xs text-steel">{r.itemCode}. Qty {r.quantity ?? '—'} {r.units}</div>
+                  <div className="text-xs text-steel">{r.itemCode ? `${r.itemCode}. ` : ''}Qty {r.quantity ?? '—'} {r.units}</div>
                 </td>
                 {showAssignee && <td className="td whitespace-nowrap">{r.assignedUserName || <span className="text-steel">Unassigned</span>}</td>}
                 <td className="td"><StageCell status={r.poStatus} hint={poHint(r)} /></td>
