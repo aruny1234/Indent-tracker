@@ -9,10 +9,10 @@ import { fmtDate, fmtDateTime } from '../../utils/dates.js';
 
 const TABS = [
   { id: 'all', label: 'All rows' }, { id: 'new', label: 'New' }, { id: 'update', label: 'Updated' },
-  { id: 'duplicate', label: 'Duplicate' }, { id: 'invalid', label: 'Invalid' },
+  { id: 'duplicate', label: 'Duplicate' }, { id: 'existing', label: 'Existing PR (skipped)' }, { id: 'invalid', label: 'Invalid' },
 ];
-const CAT_STYLE = { new: 'text-emerald-700', update: 'text-sky-700', duplicate: 'text-steel', invalid: 'text-red-700' };
-const CAT_LABEL = { new: 'New', update: 'Update', duplicate: 'Duplicate', invalid: 'Invalid' };
+const CAT_STYLE = { new: 'text-emerald-700', update: 'text-sky-700', duplicate: 'text-steel', existing: 'text-steel', invalid: 'text-red-700' };
+const CAT_LABEL = { new: 'New', update: 'Update', duplicate: 'Duplicate', existing: 'Existing PR', invalid: 'Invalid' };
 
 function History({ history, indents, err }) {
   const { profile } = useAuth();
@@ -51,7 +51,7 @@ function History({ history, indents, err }) {
               <tr>
                 <th className="th">Batch</th><th className="th">Imported</th><th className="th">File</th><th className="th">By</th>
                 <th className="th text-right">Rows</th><th className="th text-right">New</th><th className="th text-right">Updated</th>
-                <th className="th text-right">Dup.</th><th className="th text-right">Invalid</th><th className="th text-right">Records now</th>
+                <th className="th text-right">Dup.</th><th className="th text-right">Existing PR</th><th className="th text-right">Invalid</th><th className="th text-right">Records now</th>
                 <th className="th text-right">Actions</th>
               </tr>
             </thead>
@@ -68,6 +68,7 @@ function History({ history, indents, err }) {
                     <td className="td text-right">{h.newRows}</td>
                     <td className="td text-right">{h.updatedRows}</td>
                     <td className="td text-right">{h.duplicateRows ?? '—'}</td>
+                    <td className="td text-right">{h.existingPrRows ?? '—'}</td>
                     <td className={`td text-right ${h.invalidRows ? 'text-red-700' : ''}`}>{h.invalidRows}</td>
                     <td className="td text-right">{live ?? '—'}</td>
                     <td className="td whitespace-nowrap text-right">
@@ -116,11 +117,18 @@ export default function ImportPage() {
   const [summary, setSummary] = useState(null);
   const [drag, setDrag] = useState(false);
   const [err, setErr] = useState('');
+  const [skipExistingPRs, setSkipExistingPRs] = useState(true);
+
+  // Re-sort the preview whenever the switch changes
+  useEffect(() => {
+    if (!parsed) return;
+    setRows(classifyRecords(parsed.records, new Map(indents.map((i) => [i.id, i])), { skipExistingPRs }));
+  }, [skipExistingPRs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => watchImportHistory(setHistory, (e) => setHistErr(e.message)), []);
 
   const counts = useMemo(() => {
-    const c = { all: rows.length, new: 0, update: 0, duplicate: 0, invalid: 0 };
+    const c = { all: rows.length, new: 0, update: 0, duplicate: 0, existing: 0, invalid: 0 };
     rows.forEach((r) => c[r.category]++);
     return c;
   }, [rows]);
@@ -136,7 +144,7 @@ export default function ImportPage() {
       const result = await parseIndentFile(f);
       if (!result.records.length) throw new Error('The file has a header row but no data rows.');
       setParsed(result);
-      setRows(classifyRecords(result.records, new Map(indents.map((i) => [i.id, i]))));
+      setRows(classifyRecords(result.records, new Map(indents.map((i) => [i.id, i])), { skipExistingPRs }));
       setTab('all');
       setStage('preview');
     } catch (e) {
@@ -193,6 +201,17 @@ export default function ImportPage() {
               ))}
             </div>
           </div>
+          <label className="panel flex cursor-pointer items-start gap-3 p-4 text-sm">
+            <input type="checkbox" className="mt-0.5" checked={skipExistingPRs} onChange={(e) => setSkipExistingPRs(e.target.checked)} />
+            <span>
+              <span className="font-medium">Skip PR numbers that are already in the app</span>
+              <span className="mt-0.5 block text-steel">
+                {skipExistingPRs
+                  ? 'Every row whose Document Number already exists is skipped, including new lines added to that PR later. Only completely new PRs are imported.'
+                  : 'Line-by-line mode: existing lines get their NetSuite fields refreshed, and new lines of an existing PR are added.'}
+              </span>
+            </span>
+          </label>
           <div className="flex flex-wrap gap-1 border-b border-line">
             {TABS.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)}
@@ -233,6 +252,7 @@ export default function ImportPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-steel">
               {counts.new} new and {counts.update} updated rows will be saved under batch {nextBatchId(history)}. Updates change only NetSuite fields; assignment, PO, receiving and remarks stay as they are.
+              {counts.existing > 0 && ` ${counts.existing} rows belong to PRs already in the app and will be skipped.`}
               {counts.invalid > 0 && ` ${counts.invalid} invalid rows will be skipped.`}
             </p>
             <button className="btn-primary" disabled={!toSave || stage === 'saving'} onClick={save}>
@@ -245,8 +265,8 @@ export default function ImportPage() {
       {stage === 'done' && summary && (
         <div className="panel p-5">
           <h2 className="text-lg font-semibold">Import saved as batch {summary.batchId}</h2>
-          <dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
-            {[['Total rows', summary.totalRows], ['New records', summary.newRows], ['Updated records', summary.updatedRows], ['Duplicate records', summary.duplicateRows], ['Invalid records', summary.invalidRows]].map(([k, v]) => (
+          <dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-6">
+            {[['Total rows', summary.totalRows], ['New records', summary.newRows], ['Updated records', summary.updatedRows], ['Duplicate records', summary.duplicateRows], ['Existing PR skipped', summary.existingPrRows], ['Invalid records', summary.invalidRows]].map(([k, v]) => (
               <div key={k}><dt className="text-steel">{k}</dt><dd className="text-2xl font-semibold tabular-nums">{v}</dd></div>
             ))}
           </dl>

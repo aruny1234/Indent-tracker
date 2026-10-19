@@ -92,7 +92,7 @@ export async function saveImport(classified, fileName, actor, batchId) {
   const count = (c) => classified.filter((r) => r.category === c).length;
   const summary = {
     totalRows: classified.length, newRows: count('new'), updatedRows: count('update'),
-    duplicateRows: count('duplicate'), invalidRows: count('invalid'),
+    duplicateRows: count('duplicate'), existingPrRows: count('existing'), invalidRows: count('invalid'),
   };
   await setDoc(doc(db, 'importHistory', batchId), {
     batchId, fileName, importedBy: actor.name, importedById: actor.uid, importedAt: serverTimestamp(), deleted: false, ...summary,

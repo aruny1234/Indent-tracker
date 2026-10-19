@@ -156,14 +156,21 @@ function sameValue(a, b) {
   return String(a ?? '') === String(b ?? '');
 }
 
+export const normDoc = (v) => String(v ?? '').trim().toUpperCase();
+
 /**
- * Sorts parsed rows into: new | update | duplicate | invalid.
- * duplicate = repeated inside the same file, or already in the database with nothing changed.
+ * Sorts parsed rows into: new | update | duplicate | existing | invalid.
+ * duplicate = repeated inside the same file, or already in the app with nothing changed.
+ * existing  = (when skipExistingPRs is on) the PR / Document Number is already in the app, so the whole PR is skipped.
  */
-export function classifyRecords(records, existingById) {
+export function classifyRecords(records, existingById, { skipExistingPRs = false } = {}) {
+  const existingDocs = new Set([...existingById.values()].map((i) => normDoc(i.documentNumber)));
   const seen = new Set();
   return records.map((r) => {
     if (r.errors.length) return { ...r, category: 'invalid', note: r.errors.join('; ') };
+    if (skipExistingPRs && existingDocs.has(normDoc(r.documentNumber))) {
+      return { ...r, category: 'existing', note: 'PR already in the app, skipped' };
+    }
     if (seen.has(r.key)) return { ...r, category: 'duplicate', note: 'Repeated in this file' };
     seen.add(r.key);
     const ex = existingById.get(r.key);
